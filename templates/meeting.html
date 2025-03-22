@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signify - Meeting</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/meeting.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <div class="meeting-container">
+        <div class="meeting-header">
+            <div class="meeting-info">
+                <h1>Signify Meeting</h1>
+                <div class="meeting-id">
+                    <span>Meeting ID: {{ meeting_id }}</span>
+                    <button id="copy-id" class="btn-icon" onclick="copyMeetingId()">📋</button>
+                </div>
+            </div>
+            <div class="meeting-controls">
+                <button id="leave-btn" class="btn danger" onclick="leaveMeeting()">Leave Meeting</button>
+            </div>
+        </div>
+
+        <div class="meeting-content">
+            <div class="video-grid" id="video-grid">
+                <!-- Videos will be added here dynamically -->
+            </div>
+
+            <div class="chat-container">
+                <div class="chat-header">
+                    <h3>Meeting Chat</h3>
+                </div>
+                <div class="chat-messages" id="chat-messages">
+                    <!-- Messages will be added here dynamically -->
+                    <div class="system-message">
+                        <p>Welcome to the meeting! You can chat here and see gesture translations.</p>
+                    </div>
+                </div>
+                <div class="chat-input">
+                    <input type="text" id="chat-input-field" placeholder="Type a message...">
+                    <button id="send-message" class="btn primary" onclick="sendChatMessage()">Send</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="meeting-footer">
+            <div class="controls-left">
+                <button id="mic-toggle" class="control-btn" onclick="toggleMic()">
+                    <span class="icon">🎤</span>
+                    <span class="label">Mic</span>
+                </button>
+                <button id="camera-toggle" class="control-btn" onclick="toggleCamera()">
+                    <span class="icon">📹</span>
+                    <span class="label">Camera</span>
+                </button>
+                <button id="gesture-toggle" class="control-btn" onclick="toggleGesture()">
+                    <span class="icon">👋</span>
+                    <span class="label">Gesture</span>
+                </button>
+            </div>
+            <div class="controls-right">
+                <button id="participants-toggle" class="control-btn" onclick="toggleParticipantsPanel()">
+                    <span class="icon">👥</span>
+                    <span class="label">Participants</span>
+                </button>
+                <button id="chat-toggle" class="control-btn" onclick="toggleChatPanel()">
+                    <span class="icon">💬</span>
+                    <span class="label">Chat</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="participants-panel" id="participants-panel">
+        <div class="panel-header">
+            <h3>Participants</h3>
+            <button class="close-btn" onclick="toggleParticipantsPanel()">×</button>
+        </div>
+        <div class="participants-list" id="participants-list">
+            <!-- Participants will be added here dynamically -->
+        </div>
+    </div>
+
+    <!-- Hidden video element for capturing user's camera -->
+    <video id="local-video" autoplay muted style="display: none;"></video>
+    <canvas id="gesture-canvas" style="display: none;"></canvas>
+
+    <script>
+        // Meeting variables
+        const meetingId = "{{ meeting_id }}";
+        const userId = "{{ user_id }}";
+        const username = "{{ username }}";
+        let socket;
+        let localStream;
+        let micEnabled = true;
+        let cameraEnabled = true;
+        let gestureEnabled = false;
+        let gestureRecognitionInterval;
+        let frameCount = 0;
+        let videoGrid = document.getElementById('video-grid');
+        let chatMessages = document.getElementById('chat-messages');
+        let participantsList = document.getElementById('participants-list');
+        let localVideo = document.getElementById('local-video');
+        let gestureCanvas = document.getElementById('gesture-canvas');
+        let gestureContext;
+        let isGestureRecognitionActive = false;
+        let gestureToggleBtn = document.getElementById('gesture-toggle');
+        
+        // Initialize the meeting
+        window.onload = function() {
+            initializeSocket();
+            initializeLocalStream();
+            
+            // Add event listener for chat input
+            document.getElementById('chat-input-field').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    sendChatMessage();
+                }
+            });
+        };
+        
+        // Initialize Socket.IO connection
+        function initializeSocket() {
+            socket = io();
+            
+            // Join the meeting room
+            socket.on('connect', function() {
+                socket.emit('join', {
+                    meeting_id: meetingId
+                });
+            });
+            
+            // Handle new user joining
+            socket.on('user_joined', function(data) {
+                console.log('User joined:', data);
+                updateParticipantsList(data.participants);
+                
+                // Add system message
+                if (data.user_id !== userId) {
+                    addSystemMessage(`${data.username} joined the meeting`);
+                }
+            });
+            
+            // Handle user leaving
+            socket.on('user_left', function(data) {
+                console.log('User left:', data);
+                
+                // Remove user's video
+                const userVideo = document.getElementById(`video-${data.user_id}`);
+                if (userVideo) {
+                    userVideo.parentElement.remove();
+                }
+                
+                // Add system message
+                addSystemMessage(`${data.username} left the meeting`);
+            });
+            
+            // Handle new messages
+            socket.on('new_message', function(data) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = data.type === 'gesture' ? 'message gesture-message' : 'message';
+                
+                if (data.user_id === userId) {
+                    messageDiv.classList.add('own-message');
+                }
+                
+                messageDiv.innerHTML = `
+                    <div class="message-content">
+                        <span class="username">${data.username}</span>
+                        <span class="text">${data.message}</span>
+                    </div>
+                `;
+                
+                document.getElementById('chat-messages').appendChild(messageDiv);
+                document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+                
+                // If it's a gesture message and not from the current user, speak it
+                if (data.type === 'gesture' && data.user_id !== userId) {
+                    speakMessage(data.message);
+                }
+            });
+            
+            // Handle video streams from other users
+            socket.on('video_stream', function(data) {
+                // Handle video stream from another user
+                // This would typically involve adding their video to the video grid
+                // For this example, we'll just log it
+                console.log('Received video stream from user:', data.user_id);
+            });
+            
+            // Handle gesture detection
+            socket.on('gesture_detected', function(data) {
+                // Add gesture message to chat
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message gesture-message';
+                messageDiv.innerHTML = `
+                    <div class="message-content">
+                        <span class="username">${data.username}</span>
+                        <span class="gesture">${data.gesture}</span>
+                    </div>
+                `;
+                document.getElementById('chat-messages').appendChild(messageDiv);
+                document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+            });
+        }
+        
+        // Initialize local video stream
+        function initializeLocalStream() {
+            navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: true
+            }).then(stream => {
+                localStream = stream;
+                localVideo.srcObject = stream;
+                
+                // Add local video to grid
+                addVideoStream(userId, username, stream, true);
+                
+                // Mute local audio by default
+                toggleMicStream(false);
+            }).catch(error => {
+                console.error('Error accessing media devices:', error);
+                alert('Could not access camera or microphone. Please check permissions.');
+            });
+        }
+        
+        // Add a video stream to the grid
+        function addVideoStream(id, name, stream, isLocal = false) {
+            const videoContainer = document.createElement('div');
+            videoContainer.className = 'video-container';
+            videoContainer.id = `container-${id}`;
+            
+            const video = document.createElement('video');
+            video.id = `video-${id}`;
+            video.srcObject = stream;
+            video.autoplay = true;
+            video.playsInline = true;
+            if (isLocal) {
+                video.muted = true;
+            }
+            
+            const nameLabel = document.createElement('div');
+            nameLabel.className = 'name-label';
+            nameLabel.textContent = name + (isLocal ? ' (You)' : '');
+            
+            videoContainer.appendChild(video);
+            videoContainer.appendChild(nameLabel);
+            videoGrid.appendChild(videoContainer);
+        }
+        
+        // Toggle microphone
+        function toggleMic() {
+            micEnabled = !micEnabled;
+            toggleMicStream(micEnabled);
+            
+            const micBtn = document.getElementById('mic-toggle');
+            if (micEnabled) {
+                micBtn.classList.remove('disabled');
+                micBtn.querySelector('.icon').textContent = '🎤';
+            } else {
+                micBtn.classList.add('disabled');
+                micBtn.querySelector('.icon').textContent = '🔇';
+            }
+        }
+        
+        // Toggle microphone stream
+        function toggleMicStream(enabled) {
+            if (localStream) {
+                localStream.getAudioTracks().forEach(track => {
+                    track.enabled = enabled;
+                });
+            }
+        }
+        
+        // Toggle camera
+        function toggleCamera() {
+            cameraEnabled = !cameraEnabled;
+            toggleCameraStream(cameraEnabled);
+            
+            const cameraBtn = document.getElementById('camera-toggle');
+            if (cameraEnabled) {
+                cameraBtn.classList.remove('disabled');
+                cameraBtn.querySelector('.icon').textContent = '📹';
+            } else {
+                cameraBtn.classList.add('disabled');
+                cameraBtn.querySelector('.icon').textContent = '🎦';
+            }
+        }
+        
+        // Toggle camera stream
+        function toggleCameraStream(enabled) {
+            if (localStream) {
+                localStream.getVideoTracks().forEach(track => {
+                    track.enabled = enabled;
+                });
+                
+                // If gesture recognition is enabled and camera is disabled, disable gesture recognition
+                if (!enabled && gestureEnabled) {
+                    toggleGesture();
+                }
+            }
+        }
+        
+        // Toggle gesture recognition
+        function toggleGesture() {
+            gestureEnabled = !gestureEnabled;
+            const gestureBtn = document.getElementById('gesture-toggle');
+            gestureBtn.classList.toggle('active');
+            
+            if (gestureEnabled) {
+                startGestureRecognition();
+            } else {
+                stopGestureRecognition();
+            }
+        }
+        
+        // Start gesture recognition
+        function startGestureRecognition() {
+            if (!localVideo || !gestureCanvas) {
+                localVideo = document.getElementById('local-video');
+                gestureCanvas = document.getElementById('gesture-canvas');
+                gestureContext = gestureCanvas.getContext('2d');
+            }
+            
+            // Wait for video metadata to load
+            if (localVideo.readyState === 0) {
+                localVideo.addEventListener('loadedmetadata', setupGestureRecognition);
+            } else {
+                setupGestureRecognition();
+            }
+        }
+        
+        function setupGestureRecognition() {
+            // Set canvas size to match video dimensions
+            gestureCanvas.width = localVideo.videoWidth;
+            gestureCanvas.height = localVideo.videoHeight;
+            console.log(`Canvas size set to: ${gestureCanvas.width}x${gestureCanvas.height}`);
+            
+            // Clear any existing interval
+            if (gestureRecognitionInterval) {
+                clearInterval(gestureRecognitionInterval);
+            }
+            
+            // Start capturing frames at ~30fps
+            gestureRecognitionInterval = setInterval(captureAndProcessFrame, 33);
+            isGestureRecognitionActive = true;
+            gestureToggleBtn.textContent = 'Stop Gesture Recognition';
+        }
+        
+        // Stop gesture recognition
+        function stopGestureRecognition() {
+            if (gestureRecognitionInterval) {
+                clearInterval(gestureRecognitionInterval);
+                gestureRecognitionInterval = null;
+            }
+            isGestureRecognitionActive = false;
+            gestureToggleBtn.textContent = 'Start Gesture Recognition';
+        }
+        
+        // Process a frame for gesture recognition
+        function captureAndProcessFrame() {
+            try {
+                if (!localVideo || !gestureCanvas || !gestureContext || !isGestureRecognitionActive) {
+                    console.log('Video source not available or gesture recognition inactive');
+                    stopGestureRecognition();
+                    return;
+                }
+                
+                // Check if video is actually playing and has valid dimensions
+                if (localVideo.readyState !== 4 || localVideo.videoWidth === 0 || localVideo.videoHeight === 0) {
+                    console.log('Video not ready yet');
+                    return;
+                }
+                
+                // Draw current frame to canvas
+                gestureContext.drawImage(localVideo, 0, 0, gestureCanvas.width, gestureCanvas.height);
+                
+                // Get frame data
+                const frameData = gestureCanvas.toDataURL('image/jpeg', 0.8);
+                
+                // Process frame data
+                fetch('/process_gesture', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        frame_data: frameData,
+                        meeting_id: meetingId
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('Error processing gesture:', data.error);
+                        stopGestureRecognition();
+                        return;
+                    }
+                    
+                    if (data.gesture) {
+                        console.log('Recognized gesture:', data.gesture);
+                        // Stop gesture recognition after successful detection
+                        stopGestureRecognition();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error processing gesture:', error);
+                    stopGestureRecognition();
+                });
+            } catch (error) {
+                console.error('Error in captureAndProcessFrame:', error);
+                stopGestureRecognition();
+            }
+        }
+        
+        // Send a chat message
+        function sendChatMessage() {
+            const inputField = document.getElementById('chat-input-field');
+            const message = inputField.value.trim();
+            
+            if (message) {
+                socket.emit('chat_message', {
+                    meeting_id: meetingId,
+                    message: message
+                });
+                
+                inputField.value = '';
+            }
+        }
+        
+        // Add a system message to the chat
+        function addSystemMessage(message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'system-message';
+            
+            const content = document.createElement('p');
+            content.textContent = message;
+            
+            messageDiv.appendChild(content);
+            chatMessages.appendChild(messageDiv);
+            
+            // Scroll to bottom
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        // Speak a message using text-to-speech
+        function speakMessage(message) {
+            if ('speechSynthesis' in window) {
+                const speech = new SpeechSynthesisUtterance(message);
+                window.speechSynthesis.speak(speech);
+            }
+        }
+        
+        // Update the participants list
+        function updateParticipantsList(participants) {
+            participantsList.innerHTML = '';
+            
+            participants.forEach(participant => {
+                const participantDiv = document.createElement('div');
+                participantDiv.className = 'participant';
+                
+                const name = document.createElement('span');
+                name.textContent = participant.name + (participant.id === userId ? ' (You)' : '');
+                
+                participantDiv.appendChild(name);
+                participantsList.appendChild(participantDiv);
+            });
+        }
+        
+        // Toggle the participants panel
+        function toggleParticipantsPanel() {
+            const panel = document.getElementById('participants-panel');
+            panel.classList.toggle('show');
+        }
+        
+        // Toggle the chat panel on mobile
+        function toggleChatPanel() {
+            const chatContainer = document.querySelector('.chat-container');
+            chatContainer.classList.toggle('show-mobile');
+        }
+        
+        // Copy meeting ID to clipboard
+        function copyMeetingId() {
+            navigator.clipboard.writeText(meetingId).then(() => {
+                const copyBtn = document.getElementById('copy-id');
+                copyBtn.textContent = '✓';
+                setTimeout(() => {
+                    copyBtn.textContent = '📋';
+                }, 2000);
+                
+                // Add a temporary success message
+                const meetingInfo = document.querySelector('.meeting-info');
+                const successMsg = document.createElement('div');
+                successMsg.className = 'copy-success';
+                successMsg.textContent = 'Meeting ID copied! Share this with others to join.';
+                successMsg.style.color = '#4CAF50';
+                successMsg.style.fontSize = '0.9em';
+                successMsg.style.marginTop = '5px';
+                
+                // Remove any existing success message
+                const existingMsg = meetingInfo.querySelector('.copy-success');
+                if (existingMsg) {
+                    existingMsg.remove();
+                }
+                
+                meetingInfo.appendChild(successMsg);
+                setTimeout(() => {
+                    successMsg.remove();
+                }, 3000);
+            }).catch(err => {
+                console.error('Could not copy text: ', err);
+                alert('Failed to copy meeting ID');
+            });
+        }
+        
+        // Leave the meeting
+        function leaveMeeting() {
+            socket.emit('leave', {
+                meeting_id: meetingId
+            });
+            
+            window.location.href = `/thankyou?meeting_id=${meetingId}`;
+        }
+        
+        // Handle page unload/close
+        window.addEventListener('beforeunload', function() {
+            if (socket) {
+                socket.emit('leave', {
+                    meeting_id: meetingId
+                });
+            }
+        });
+    </script>
+</body>
+</html>
