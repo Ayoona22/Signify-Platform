@@ -7,6 +7,7 @@ let localStream = null;
 let isGestureActive = false;
 let isMicActive = true;
 let isCameraActive = true;
+let peerConnections = {}; // Store RTCPeerConnection objects
 
 // DOM elements
 const videoGrid = document.getElementById('video-grid');
@@ -15,6 +16,16 @@ const chatInputField = document.getElementById('chat-input-field');
 const micToggle = document.getElementById('mic-toggle');
 const cameraToggle = document.getElementById('camera-toggle');
 const gestureToggle = document.getElementById('gesture-toggle');
+const participantsList = document.getElementById('participants-list');
+
+// ICE servers for WebRTC (STUN/TURN)
+const iceServers = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+    ]
+};
 
 // Initialize when the page loads
 document.addEventListener('DOMContentLoaded', () => {
@@ -64,10 +75,12 @@ function setupSocketListeners() {
     socket.on('user_joined', (data) => {
         addSystemMessage(`${data.username} joined the meeting`);
         
-        // Send our video stream to the new user
-        if (localStream) {
-            // This would typically be handled by WebRTC, but for simplicity
-            // we're just sending a notification here
+        // Create a new peer connection for the new user
+        if (data.user_id !== userId) {
+            createPeerConnection(data.user_id, false);
+            
+            // Send an offer to the new user
+            createOffer(data.user_id);
         }
         
         // Update participants list
@@ -83,6 +96,12 @@ function setupSocketListeners() {
         if (userVideo) {
             userVideo.parentElement.remove();
         }
+        
+        // Close and remove the peer connection
+        if (peerConnections[data.user_id]) {
+            peerConnections[data.user_id].close();
+            delete peerConnections[data.user_id];
+        }
     });
     
     // When a new message is received
@@ -95,11 +114,125 @@ function setupSocketListeners() {
         }
     });
     
-    // When receiving a video stream (this would be WebRTC in a real app)
-    socket.on('video_stream', (data) => {
-        // Handle incoming video stream
-        // This would be WebRTC in a real implementation
+    // WebRTC Signaling
+    socket.on('offer', async (data) => {
+        const { offer, user_id, username } = data;
+        
+        // Create peer connection if it doesn't exist
+        if (!peerConnections[user_id]) {
+            createPeerConnection(user_id, true);
+        }
+        
+        try {
+            await peerConnections[user_id].setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnections[user_id].createAnswer();
+            await peerConnections[user_id].setLocalDescription(answer);
+            
+            // Send the answer back
+            socket.emit('answer', {
+                meeting_id: meetingId,
+                to_user_id: user_id,
+                answer: answer
+            });
+        } catch (error) {
+            console.error('Error handling offer:', error);
+        }
     });
+    
+    socket.on('answer', async (data) => {
+        const { answer, user_id } = data;
+        try {
+            if (peerConnections[user_id]) {
+                await peerConnections[user_id].setRemoteDescription(new RTCSessionDescription(answer));
+            }
+        } catch (error) {
+            console.error('Error handling answer:', error);
+        }
+    });
+    
+    socket.on('ice_candidate', async (data) => {
+        const { candidate, user_id } = data;
+        try {
+            if (peerConnections[user_id]) {
+                await peerConnections[user_id].addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        } catch (error) {
+            console.error('Error adding ice candidate:', error);
+        }
+    });
+}
+
+// Create a peer connection for a user
+function createPeerConnection(userId, isReceiver) {
+    const peerConnection = new RTCPeerConnection(iceServers);
+    peerConnections[userId] = peerConnection;
+    
+    // Add local tracks to the peer connection
+    localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+    });
+    
+    // Set up ice candidate event
+    peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+            socket.emit('ice_candidate', {
+                meeting_id: meetingId,
+                to_user_id: userId,
+                candidate: event.candidate
+            });
+        }
+    };
+    
+    // Set up track event to get remote stream
+    peerConnection.ontrack = (event) => {
+        // Create a video element for the remote user if it doesn't exist
+        let videoElement = document.getElementById(`video-${userId}`);
+        if (!videoElement) {
+            videoElement = createVideoElement(userId, `Participant ${userId}`, false);
+            videoGrid.appendChild(videoElement);
+            
+            // Update the name when we get user info
+            socket.emit('get_user_info', {
+                meeting_id: meetingId,
+                user_id: userId
+            });
+        }
+        
+        // Set the remote stream as the source for the video element
+        if (videoElement && event.streams && event.streams[0]) {
+            videoElement.srcObject = event.streams[0];
+        }
+    };
+    
+    // For debugging connection state
+    peerConnection.onconnectionstatechange = () => {
+        console.log(`Connection state with ${userId}: ${peerConnection.connectionState}`);
+    };
+    
+    // For debugging ICE connection state
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log(`ICE connection state with ${userId}: ${peerConnection.iceConnectionState}`);
+    };
+    
+    return peerConnection;
+}
+
+// Create an offer to establish a WebRTC connection
+async function createOffer(toUserId) {
+    try {
+        const peerConnection = peerConnections[toUserId];
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        
+        // Send the offer to the other user
+        socket.emit('offer', {
+            meeting_id: meetingId,
+            to_user_id: toUserId,
+            offer: offer
+        });
+    } catch (error) {
+        console.error('Error creating offer:', error);
+    }
 }
 
 // Create a video element for a user
@@ -308,7 +441,14 @@ function copyMeetingId() {
 
 // Leave the meeting
 function leaveMeeting() {
+    // Notify others that you're leaving
     socket.emit('leave', { meeting_id: meetingId });
+    
+    // Close all peer connections
+    Object.keys(peerConnections).forEach(userId => {
+        peerConnections[userId].close();
+    });
+    peerConnections = {};
     
     // Stop all media tracks
     if (localStream) {
@@ -326,6 +466,28 @@ function leaveMeeting() {
 
 // Update the list of participants
 function updateParticipantsList(participants) {
-    // This function would update a UI component showing all participants
-    console.log('Participants:', participants);
+    if (!participantsList) return;
+    
+    // Clear the current list
+    participantsList.innerHTML = '';
+    
+    // Add each participant to the list
+    participants.forEach(participant => {
+        const participantElement = document.createElement('div');
+        participantElement.className = 'participant';
+        participantElement.dataset.userId = participant.id;
+        
+        const avatarElement = document.createElement('div');
+        avatarElement.className = 'avatar';
+        avatarElement.textContent = participant.name.charAt(0).toUpperCase();
+        
+        const nameElement = document.createElement('div');
+        nameElement.className = 'name';
+        nameElement.textContent = participant.name + (participant.id === userId ? ' (You)' : '');
+        
+        participantElement.appendChild(avatarElement);
+        participantElement.appendChild(nameElement);
+        
+        participantsList.appendChild(participantElement);
+    });
 }
