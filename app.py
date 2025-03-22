@@ -4,7 +4,7 @@ import os
 import sqlite3
 import uuid
 import json
-from database import init_db, add_user, verify_user, get_user
+from database import init_db, add_user, verify_user, get_user, add_meeting, get_meeting, meeting_exists
 from gesture_recognition import GestureRecognizer
 
 # Initialize Flask app
@@ -18,8 +18,8 @@ init_db()
 # Initialize gesture recognizer
 gesture_recognizer = GestureRecognizer()
 
-# Active meetings
-active_meetings = {}
+# Active participants (stored in memory but keyed by meeting ID)
+active_participants = {}
 
 @app.route('/')
 def home():
@@ -70,10 +70,12 @@ def create_meeting():
         return redirect(url_for('login'))
     
     meeting_id = str(uuid.uuid4())[:8]
-    active_meetings[meeting_id] = {
-        'host': session['user_id'],
-        'participants': {}
-    }
+    # Store meeting in database
+    add_meeting(meeting_id, session['user_id'])
+    
+    # Initialize participant tracking for this meeting
+    if meeting_id not in active_participants:
+        active_participants[meeting_id] = {}
     
     return redirect(url_for('meeting', meeting_id=meeting_id))
 
@@ -83,7 +85,9 @@ def join_meeting():
         return redirect(url_for('login'))
     
     meeting_id = request.form.get('meeting_id')
-    if meeting_id in active_meetings:
+    
+    # Check if meeting exists in database
+    if meeting_exists(meeting_id):
         return redirect(url_for('meeting', meeting_id=meeting_id))
     else:
         return render_template('dashboard.html', error="Meeting not found", username=session['user_name'])
@@ -93,11 +97,14 @@ def meeting(meeting_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
     
-    if meeting_id not in active_meetings:
-        active_meetings[meeting_id] = {
-            'host': session['user_id'],
-            'participants': {}
-        }
+    # Check if meeting exists in database
+    if not meeting_exists(meeting_id):
+        # Create meeting if it doesn't exist (for the host)
+        add_meeting(meeting_id, session['user_id'])
+    
+    # Initialize participant tracking for this meeting if not already done
+    if meeting_id not in active_participants:
+        active_participants[meeting_id] = {}
     
     return render_template('meeting.html', meeting_id=meeting_id, username=session['user_name'], user_id=session['user_id'])
 
@@ -108,49 +115,25 @@ def thankyou():
 
 @app.route('/process_gesture', methods=['POST'])
 def process_gesture():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'error': 'Not authenticated'})
+    
     try:
-        # Check if user is authenticated
-        if 'user_id' not in session:
-            return jsonify({'error': 'Not authenticated'})
-
-        # Get frame data and meeting ID from request
-        data = request.get_json()
-        if not data or 'frame_data' not in data or 'meeting_id' not in data:
-            return jsonify({'error': 'Missing frame data or meeting ID'})
-
-        frame_data = data['frame_data']
-        meeting_id = data['meeting_id']
-
-        # Process the frame with gesture recognizer
-        gesture = gesture_recognizer.recognize_gesture(frame_data)
+        # Get the frame data from the request
+        frame_data = request.json.get('frame')
+        meeting_id = request.json.get('meeting_id')
         
-        if gesture:
-            print(f"Recognized gesture: {gesture}")  # Debug print
-            
-            # Emit the gesture to all participants in the meeting
-            socketio.emit('new_message', {
-                'user_id': session['user_id'],
-                'username': session['user_name'],
-                'message': gesture,
-                'type': 'gesture',
-                'meeting_id': meeting_id
-            }, room=meeting_id)
-            
-            return jsonify({
-                'success': True,
-                'gesture': gesture
-            })
+        # Process the frame with the gesture recognizer
+        gesture, confidence = gesture_recognizer.predict(frame_data)
         
+        # Return the result
         return jsonify({
             'success': True,
-            'gesture': None
+            'gesture': gesture,
+            'confidence': confidence
         })
-
     except Exception as e:
-        print(f"Error processing gesture: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)})
+        return jsonify({'success': False, 'error': str(e)})
 
 # WebSocket event handlers
 @socketio.on('join')
@@ -164,19 +147,20 @@ def on_join(data):
     
     join_room(meeting_id)
     
-    # Add participant to meeting
-    if meeting_id in active_meetings:
-        active_meetings[meeting_id]['participants'][user_id] = {
-            'name': username,
-            'id': user_id
-        }
+    # Add participant to meeting's active participants
+    if meeting_id not in active_participants:
+        active_participants[meeting_id] = {}
+    
+    active_participants[meeting_id][user_id] = {
+        'name': username,
+        'id': user_id
+    }
     
     # Notify other participants
-    participants = active_meetings.get(meeting_id, {}).get('participants', {})
     emit('user_joined', {
         'user_id': user_id,
         'username': username,
-        'participants': list(participants.values())
+        'participants': list(active_participants[meeting_id].values())
     }, to=meeting_id)
 
 @socketio.on('leave')
@@ -191,12 +175,12 @@ def on_leave(data):
     leave_room(meeting_id)
     
     # Remove participant from meeting
-    if meeting_id in active_meetings and user_id in active_meetings[meeting_id]['participants']:
-        del active_meetings[meeting_id]['participants'][user_id]
+    if meeting_id in active_participants and user_id in active_participants[meeting_id]:
+        del active_participants[meeting_id][user_id]
     
-    # If no participants left, remove the meeting
-    if meeting_id in active_meetings and not active_meetings[meeting_id]['participants']:
-        del active_meetings[meeting_id]
+    # If no participants left, clean up (but don't delete from database)
+    if meeting_id in active_participants and not active_participants[meeting_id]:
+        del active_participants[meeting_id]
     
     # Notify other participants
     emit('user_left', {
