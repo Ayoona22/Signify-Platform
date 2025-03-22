@@ -99,6 +99,12 @@ def add_meeting(meeting_id, host_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Check if meeting already exists
+    cursor.execute('SELECT * FROM meetings WHERE id = ?', (meeting_id,))
+    if cursor.fetchone() is not None:
+        conn.close()
+        return False
+    
     cursor.execute('INSERT INTO meetings (id, host_id) VALUES (?, ?)',
                   (meeting_id, host_id))
     
@@ -115,3 +121,13 @@ def get_meeting(meeting_id):
     
     conn.close()
     return dict(meeting) if meeting else None
+
+def meeting_exists(meeting_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) as count FROM meetings WHERE id = ?', (meeting_id,))
+    result = cursor.fetchone()
+    
+    conn.close()
+    return result['count'] > 0
