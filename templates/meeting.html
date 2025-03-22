@@ -73,10 +73,11 @@
         </div>
     </div>
 
+    <!-- Participants Panel -->
     <div class="participants-panel" id="participants-panel">
-        <div class="panel-header">
+        <div class="participants-header">
             <h3>Participants</h3>
-            <button class="close-btn" onclick="toggleParticipantsPanel()">×</button>
+            <button id="close-participants">×</button>
         </div>
         <div class="participants-list" id="participants-list">
             <!-- Participants will be added here dynamically -->
@@ -307,11 +308,14 @@
         function toggleGesture() {
             gestureEnabled = !gestureEnabled;
             const gestureBtn = document.getElementById('gesture-toggle');
-            gestureBtn.classList.toggle('active');
             
             if (gestureEnabled) {
+                gestureBtn.classList.add('active');
+                gestureBtn.querySelector('.label').textContent = 'Stop Gesture';
                 startGestureRecognition();
             } else {
+                gestureBtn.classList.remove('active');
+                gestureBtn.querySelector('.label').textContent = 'Start Gesture';
                 stopGestureRecognition();
             }
         }
@@ -346,7 +350,6 @@
             // Start capturing frames at ~30fps
             gestureRecognitionInterval = setInterval(captureAndProcessFrame, 33);
             isGestureRecognitionActive = true;
-            gestureToggleBtn.textContent = 'Stop Gesture Recognition';
         }
         
         // Stop gesture recognition
@@ -356,7 +359,6 @@
                 gestureRecognitionInterval = null;
             }
             isGestureRecognitionActive = false;
-            gestureToggleBtn.textContent = 'Start Gesture Recognition';
         }
         
         // Process a frame for gesture recognition
@@ -472,7 +474,7 @@
         // Toggle the participants panel
         function toggleParticipantsPanel() {
             const panel = document.getElementById('participants-panel');
-            panel.classList.toggle('show');
+            panel.classList.toggle('active');
         }
         
         // Toggle the chat panel on mobile
@@ -484,34 +486,9 @@
         // Copy meeting ID to clipboard
         function copyMeetingId() {
             navigator.clipboard.writeText(meetingId).then(() => {
-                const copyBtn = document.getElementById('copy-id');
-                copyBtn.textContent = '✓';
-                setTimeout(() => {
-                    copyBtn.textContent = '📋';
-                }, 2000);
-                
-                // Add a temporary success message
-                const meetingInfo = document.querySelector('.meeting-info');
-                const successMsg = document.createElement('div');
-                successMsg.className = 'copy-success';
-                successMsg.textContent = 'Meeting ID copied! Share this with others to join.';
-                successMsg.style.color = '#4CAF50';
-                successMsg.style.fontSize = '0.9em';
-                successMsg.style.marginTop = '5px';
-                
-                // Remove any existing success message
-                const existingMsg = meetingInfo.querySelector('.copy-success');
-                if (existingMsg) {
-                    existingMsg.remove();
-                }
-                
-                meetingInfo.appendChild(successMsg);
-                setTimeout(() => {
-                    successMsg.remove();
-                }, 3000);
+                alert('Meeting ID copied to clipboard');
             }).catch(err => {
                 console.error('Could not copy text: ', err);
-                alert('Failed to copy meeting ID');
             });
         }
         
@@ -532,6 +509,13 @@
                 });
             }
         });
+        
+        // Add event listener for close button
+        document.getElementById('close-participants').addEventListener('click', function() {
+            document.getElementById('participants-panel').classList.remove('active');
+        });
     </script>
+    
+    
 </body>
 </html>
