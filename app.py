@@ -239,5 +239,73 @@ def handle_video_stream(data):
         'stream': stream_data
     }, to=meeting_id, skip_sid=request.sid)
 
+# Add these new socket event handlers to your app.py file
+
+@socketio.on('offer')
+def handle_offer(data):
+    meeting_id = data['meeting_id']
+    to_user_id = data['to_user_id']
+    offer = data['offer']
+    user_id = session.get('user_id')
+    username = session.get('user_name')
+    
+    if not user_id or not username:
+        return
+    
+    # Forward the offer to the intended recipient
+    emit('offer', {
+        'offer': offer,
+        'user_id': user_id,
+        'username': username
+    }, room=to_user_id)
+
+@socketio.on('answer')
+def handle_answer(data):
+    meeting_id = data['meeting_id']
+    to_user_id = data['to_user_id']
+    answer = data['answer']
+    user_id = session.get('user_id')
+    
+    if not user_id:
+        return
+    
+    # Forward the answer to the intended recipient
+    emit('answer', {
+        'answer': answer,
+        'user_id': user_id
+    }, room=to_user_id)
+
+@socketio.on('ice_candidate')
+def handle_ice_candidate(data):
+    meeting_id = data['meeting_id']
+    to_user_id = data['to_user_id']
+    candidate = data['candidate']
+    user_id = session.get('user_id')
+    
+    if not user_id:
+        return
+    
+    # Forward the ICE candidate to the intended recipient
+    emit('ice_candidate', {
+        'candidate': candidate,
+        'user_id': user_id
+    }, room=to_user_id)
+
+@socketio.on('get_user_info')
+def handle_get_user_info(data):
+    meeting_id = data['meeting_id']
+    requested_user_id = data['user_id']
+    
+    # Get the user information from the database or active participants
+    user_info = None
+    if meeting_id in active_participants and requested_user_id in active_participants[meeting_id]:
+        user_info = active_participants[meeting_id][requested_user_id]
+    
+    if user_info:
+        emit('user_info', {
+            'user_id': requested_user_id,
+            'username': user_info['name']
+        })
+
 if __name__ == '__main__':
     socketio.run(app, debug=True)
