@@ -8,84 +8,17 @@
 </head>
 <body>
     <div class="container">
-        <header>
-            <div class="logo">
-                <h1>Signify</h1>
-                <p>Gesture to Speech for Virtual Meetings</p>
+        <div class="header">
+            <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Signify Logo" class="logo">
+            <h1>Welcome to Signify</h1>
+            <p>Connect through sign language</p>
+        </div>
+        <div class="content">
+            <div class="auth-buttons">
+                <a href="{{ url_for('login') }}" class="btn primary">Login</a>
+                <a href="{{ url_for('signup') }}" class="btn secondary">Sign Up</a>
             </div>
-            <nav>
-                <ul>
-                    <li><a href="{{ url_for('home') }}" class="active">Home</a></li>
-                    <li><a href="{{ url_for('login') }}">Login</a></li>
-                </ul>
-            </nav>
-        </header>
-
-        <main class="hero-section">
-            <div class="hero-content">
-                <h2>Breaking Communication Barriers</h2>
-                <p>Signify converts sign language gestures to speech in real-time during virtual meetings, making communication accessible for everyone.</p>
-                <div class="cta-buttons">
-                    <a href="{{ url_for('login') }}" class="btn primary">Get Started</a>
-                    <a href="#features" class="btn secondary">Learn More</a>
-                </div>
-            </div>
-            <div class="hero-image">
-                <img src="{{ url_for('static', filename='images/hero.png') }}" alt="Sign language illustration">
-            </div>
-        </main>
-
-        <section id="features" class="features-section">
-            <h2>Key Features</h2>
-            <div class="features-grid">
-                <div class="feature-card">
-                    <div class="icon">🔄</div>
-                    <h3>Real-time Translation</h3>
-                    <p>Convert sign language gestures to speech in real-time during your virtual meetings.</p>
-                </div>
-                <div class="feature-card">
-                    <div class="icon">🎯</div>
-                    <h3>Advanced Recognition</h3>
-                    <p>Powered by BiLSTM neural networks for accurate gesture recognition.</p>
-                </div>
-                <div class="feature-card">
-                    <div class="icon">💬</div>
-                    <h3>Meeting Integration</h3>
-                    <p>Seamlessly integrates with virtual meeting platforms for an inclusive experience.</p>
-                </div>
-                <div class="feature-card">
-                    <div class="icon">🔊</div>
-                    <h3>Text & Voice Output</h3>
-                    <p>Displays recognized signs as text and converts them to speech for all participants.</p>
-                </div>
-            </div>
-        </section>
-
-        <section class="how-it-works">
-            <h2>How It Works</h2>
-            <div class="steps">
-                <div class="step">
-                    <div class="step-number">1</div>
-                    <h3>Create or Join Meeting</h3>
-                    <p>Start a new meeting or join an existing one with a meeting code.</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">2</div>
-                    <h3>Toggle Gesture Recognition</h3>
-                    <p>Enable the gesture button when you want to communicate using sign language.</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">3</div>
-                    <h3>Sign Naturally</h3>
-                    <p>Perform sign language gestures in front of your camera.</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">4</div>
-                    <h3>Communicate Effectively</h3>
-                    <p>Your signs are converted to speech for all participants and appear in the chat.</p>
-                </div>
-            </div>
-        </section>
+        </div>
     </div>
 
     <footer>
