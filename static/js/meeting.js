@@ -1,16 +1,12 @@
 // Global variables
 const socket = io();
-const meetingId = document.querySelector('.meeting-id span').textContent.split(': ')[1];
-const userId = document.getElementById('video-grid').dataset.userId;
-const username = document.getElementById('video-grid').dataset.username;
-
+const meetingId = document.getElementById('meeting-id').innerText.split(':')[1].trim();
+const userId = document.getElementById('user-id').value;
+const username = document.getElementById('username').value;
 let localStream = null;
-let peers = {};
-let isAudioEnabled = true;
-let isVideoEnabled = true;
-let isGestureEnabled = false;
-let gestureRecognitionInterval = null;
-let recognitionInProgress = false;
+let isGestureActive = false;
+let isMicActive = true;
+let isCameraActive = true;
 
 // DOM elements
 const videoGrid = document.getElementById('video-grid');
@@ -20,192 +16,112 @@ const micToggle = document.getElementById('mic-toggle');
 const cameraToggle = document.getElementById('camera-toggle');
 const gestureToggle = document.getElementById('gesture-toggle');
 
-// Initialize the meeting
+// Initialize when the page loads
 document.addEventListener('DOMContentLoaded', () => {
     initializeMeeting();
     
-    // Enter key to send chat messages
+    // Set up chat input
     chatInputField.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             sendChatMessage();
         }
     });
-    
-    // Join the meeting room
-    socket.emit('join', { meeting_id: meetingId });
 });
 
-// Leave the meeting and redirect to thank you page
-function leaveMeeting() {
-    socket.emit('leave', { meeting_id: meetingId });
-    
-    // Stop all streams and connections
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-    }
-    
-    // Close peer connections
-    for (let peerId in peers) {
-        peers[peerId].close();
-    }
-    
-    // Redirect to thank you page
-    window.location.href = `/thankyou?meeting_id=${meetingId}`;
-}
-
-// Copy meeting ID to clipboard
-function copyMeetingId() {
-    navigator.clipboard.writeText(meetingId).then(() => {
-        alert('Meeting ID copied to clipboard!');
-    }).catch(err => {
-        console.error('Failed to copy meeting ID: ', err);
-    });
-}
-
-// Initialize the meeting with video and audio
+// Initialize the meeting
 async function initializeMeeting() {
     try {
-        // Get user media
+        // Get media stream
         localStream = await navigator.mediaDevices.getUserMedia({
             video: true,
             audio: true
         });
         
-        // Create and display local video
+        // Create local video
         const localVideo = createVideoElement(userId, username, true);
-        localVideo.srcObject = localStream;
         videoGrid.appendChild(localVideo);
+        localVideo.srcObject = localStream;
+        
+        // Join the meeting
+        socket.emit('join', { meeting_id: meetingId });
         
         // Set up socket event listeners
         setupSocketListeners();
         
-    } catch (error) {
-        console.error('Error accessing media devices:', error);
-        alert('Failed to access camera and microphone. Please check permissions.');
+        // Initialize gesture recognition if needed
+        if (isGestureActive) {
+            startGestureRecognition();
+        }
+    } catch (err) {
+        console.error('Error accessing media devices:', err);
+        addSystemMessage('Error: Could not access camera or microphone. Please check permissions.');
     }
-}
-
-// Create a video element for a participant
-function createVideoElement(id, name, isLocal = false) {
-    const videoContainer = document.createElement('div');
-    videoContainer.className = 'video-container';
-    videoContainer.id = `video-container-${id}`;
-    
-    const video = document.createElement('video');
-    video.id = `video-${id}`;
-    video.autoplay = true;
-    video.playsInline = true;
-    
-    if (isLocal) {
-        video.muted = true; // Mute local video to prevent feedback
-    }
-    
-    const nameLabel = document.createElement('div');
-    nameLabel.className = 'name-label';
-    nameLabel.textContent = name + (isLocal ? ' (You)' : '');
-    
-    videoContainer.appendChild(video);
-    videoContainer.appendChild(nameLabel);
-    
-    return videoContainer;
 }
 
 // Set up socket event listeners
 function setupSocketListeners() {
     // When a new user joins
     socket.on('user_joined', (data) => {
-        // Add system message
-        addSystemMessage(`${data.username} joined the meeting.`);
+        addSystemMessage(`${data.username} joined the meeting`);
         
-        // If user is not yourself, create a video element for them
-        if (data.user_id !== userId) {
-            // Share your stream with the new user
-            sendVideoStream(data.user_id);
+        // Send our video stream to the new user
+        if (localStream) {
+            // This would typically be handled by WebRTC, but for simplicity
+            // we're just sending a notification here
         }
+        
+        // Update participants list
+        updateParticipantsList(data.participants);
     });
     
     // When a user leaves
     socket.on('user_left', (data) => {
-        // Add system message
-        addSystemMessage(`${data.username} left the meeting.`);
+        addSystemMessage(`${data.username} left the meeting`);
         
         // Remove their video
-        const videoContainer = document.getElementById(`video-container-${data.user_id}`);
-        if (videoContainer) {
-            videoContainer.remove();
+        const userVideo = document.getElementById(`video-${data.user_id}`);
+        if (userVideo) {
+            userVideo.parentElement.remove();
         }
     });
     
-    // When receiving a chat or gesture message
+    // When a new message is received
     socket.on('new_message', (data) => {
-        addChatMessage(data);
-    });
-    
-    // When receiving a video stream from another user
-    socket.on('video_stream', (data) => {
-        if (data.user_id !== userId) {
-            // Create video element if it doesn't exist
-            let videoContainer = document.getElementById(`video-container-${data.user_id}`);
-            if (!videoContainer) {
-                videoContainer = createVideoElement(data.user_id, data.username);
-                videoGrid.appendChild(videoContainer);
-            }
-            
-            // Update the video stream
-            const video = document.getElementById(`video-${data.user_id}`);
-            if (video && data.stream) {
-                const mediaStream = new MediaStream();
-                mediaStream.addTrack(data.stream);
-                video.srcObject = mediaStream;
-            }
+        addChatMessage(data.username, data.message, data.type);
+        
+        // If it's a gesture message, also convert to speech
+        if (data.type === 'gesture') {
+            speakText(data.message);
         }
     });
+    
+    // When receiving a video stream (this would be WebRTC in a real app)
+    socket.on('video_stream', (data) => {
+        // Handle incoming video stream
+        // This would be WebRTC in a real implementation
+    });
 }
 
-// Send chat message
-function sendChatMessage() {
-    const message = chatInputField.value.trim();
+// Create a video element for a user
+function createVideoElement(userId, username, isLocal = false) {
+    const videoContainer = document.createElement('div');
+    videoContainer.className = 'video-container';
+    videoContainer.id = `container-${userId}`;
     
-    if (message) {
-        socket.emit('chat_message', {
-            meeting_id: meetingId,
-            message: message
-        });
-        
-        chatInputField.value = '';
-    }
-}
-
-// Add a chat message to the chat box
-function addChatMessage(data) {
-    const messageElement = document.createElement('div');
+    const video = document.createElement('video');
+    video.id = `video-${userId}`;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = isLocal; // Mute local video to prevent feedback
     
-    if (data.type === 'gesture') {
-        messageElement.className = 'gesture-message';
-        messageElement.innerHTML = `
-            <span class="sender">${data.username} (via gesture):</span>
-            <p>${data.message}</p>
-        `;
-    } else {
-        messageElement.className = 'chat-message';
-        messageElement.innerHTML = `
-            <span class="sender">${data.username}:</span>
-            <p>${data.message}</p>
-        `;
-    }
+    const nameTag = document.createElement('div');
+    nameTag.className = 'name-tag';
+    nameTag.textContent = username + (isLocal ? ' (You)' : '');
     
-    chatMessages.appendChild(messageElement);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-// Add a system message to the chat box
-function addSystemMessage(message) {
-    const messageElement = document.createElement('div');
-    messageElement.className = 'system-message';
-    messageElement.innerHTML = `<p>${message}</p>`;
+    videoContainer.appendChild(video);
+    videoContainer.appendChild(nameTag);
     
-    chatMessages.appendChild(messageElement);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return video;
 }
 
 // Toggle microphone
@@ -213,13 +129,16 @@ function toggleMic() {
     if (localStream) {
         const audioTracks = localStream.getAudioTracks();
         if (audioTracks.length > 0) {
-            isAudioEnabled = !isAudioEnabled;
-            audioTracks[0].enabled = isAudioEnabled;
+            isMicActive = !isMicActive;
+            audioTracks[0].enabled = isMicActive;
             
-            // Update button UI
-            micToggle.classList.toggle('disabled', !isAudioEnabled);
+            // Update UI
+            micToggle.classList.toggle('active', isMicActive);
+            micToggle.classList.toggle('inactive', !isMicActive);
+            
+            // Update icon
             const icon = micToggle.querySelector('.icon');
-            icon.textContent = isAudioEnabled ? '🎤' : '🔇';
+            icon.textContent = isMicActive ? '🎤' : '🔇';
         }
     }
 }
@@ -229,76 +148,62 @@ function toggleCamera() {
     if (localStream) {
         const videoTracks = localStream.getVideoTracks();
         if (videoTracks.length > 0) {
-            isVideoEnabled = !isVideoEnabled;
-            videoTracks[0].enabled = isVideoEnabled;
+            isCameraActive = !isCameraActive;
+            videoTracks[0].enabled = isCameraActive;
             
-            // Update button UI
-            cameraToggle.classList.toggle('disabled', !isVideoEnabled);
+            // Update UI
+            cameraToggle.classList.toggle('active', isCameraActive);
+            cameraToggle.classList.toggle('inactive', !isCameraActive);
+            
+            // Update icon
             const icon = cameraToggle.querySelector('.icon');
-            icon.textContent = isVideoEnabled ? '📹' : '🚫';
+            icon.textContent = isCameraActive ? '📹' : '🚫';
         }
     }
 }
 
 // Toggle gesture recognition
 function toggleGesture() {
-    isGestureEnabled = !isGestureEnabled;
+    isGestureActive = !isGestureActive;
     
-    // Update button UI
-    gestureToggle.classList.toggle('active', isGestureEnabled);
+    // Update UI
+    gestureToggle.classList.toggle('active', isGestureActive);
+    gestureToggle.classList.toggle('inactive', !isGestureActive);
     
-    if (isGestureEnabled) {
-        // Start gesture recognition
+    // Start or stop gesture recognition
+    if (isGestureActive) {
         startGestureRecognition();
-        addSystemMessage("Gesture recognition is now ON.");
+        addSystemMessage('Gesture recognition activated');
     } else {
-        // Stop gesture recognition
         stopGestureRecognition();
-        addSystemMessage("Gesture recognition is now OFF.");
+        addSystemMessage('Gesture recognition deactivated');
     }
 }
 
 // Start gesture recognition
+let gestureInterval = null;
 function startGestureRecognition() {
-    if (!gestureRecognitionInterval) {
-        gestureRecognitionInterval = setInterval(() => {
-            if (!recognitionInProgress && isGestureEnabled && isVideoEnabled) {
-                captureFrameAndRecognize();
-            }
-        }, 1000); // Check every second
-    }
-}
-
-// Stop gesture recognition
-function stopGestureRecognition() {
-    if (gestureRecognitionInterval) {
-        clearInterval(gestureRecognitionInterval);
-        gestureRecognitionInterval = null;
-    }
-}
-
-// Capture video frame and send for recognition
-function captureFrameAndRecognize() {
-    if (!localStream || !isVideoEnabled) return;
+    if (!localStream) return;
     
-    recognitionInProgress = true;
+    // Create a canvas to capture frames from video
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    const video = document.getElementById(`video-${userId}`);
     
-    try {
-        const video = document.getElementById(`video-${userId}`);
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
+    canvas.width = 320;
+    canvas.height = 240;
+    
+    // Capture frames at regular intervals
+    gestureInterval = setInterval(() => {
+        if (!isGestureActive) {
+            clearInterval(gestureInterval);
+            return;
+        }
         
-        // Set canvas dimensions to match video
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        
-        // Draw the current video frame on the canvas
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const frameData = canvas.toDataURL('image/jpeg');
         
-        // Convert canvas to base64 image
-        const frameData = canvas.toDataURL('image/jpeg', 0.8);
-        
-        // Send frame data for gesture recognition
+        // Send frame to server for processing
         fetch('/process_gesture', {
             method: 'POST',
             headers: {
@@ -312,66 +217,115 @@ function captureFrameAndRecognize() {
         .then(response => response.json())
         .then(data => {
             if (data.success && data.gesture && data.gesture !== "Collecting frames..." && data.confidence > 0.7) {
-                // Send recognized gesture as a message
+                // Send recognized gesture as message
                 socket.emit('gesture_message', {
                     meeting_id: meetingId,
                     message: data.gesture
                 });
-                
-                // Speak the gesture using text-to-speech
-                speakGesture(data.gesture);
             }
-            recognitionInProgress = false;
         })
         .catch(error => {
             console.error('Error processing gesture:', error);
-            recognitionInProgress = false;
         });
-    } catch (error) {
-        console.error('Error capturing frame:', error);
-        recognitionInProgress = false;
+    }, 1000); // Process every second
+}
+
+// Stop gesture recognition
+function stopGestureRecognition() {
+    if (gestureInterval) {
+        clearInterval(gestureInterval);
+        gestureInterval = null;
     }
 }
 
-// Speak the recognized gesture using text-to-speech
-function speakGesture(text) {
+// Send a chat message
+function sendChatMessage() {
+    const message = chatInputField.value.trim();
+    if (message) {
+        socket.emit('chat_message', {
+            meeting_id: meetingId,
+            message: message
+        });
+        
+        chatInputField.value = '';
+    }
+}
+
+// Add a chat message to the chat box
+function addChatMessage(sender, message, type = 'chat') {
+    const messageElement = document.createElement('div');
+    messageElement.className = `message ${type}-message`;
+    
+    const senderElement = document.createElement('div');
+    senderElement.className = 'message-sender';
+    senderElement.textContent = sender;
+    
+    const contentElement = document.createElement('div');
+    contentElement.className = 'message-content';
+    contentElement.textContent = message;
+    
+    messageElement.appendChild(senderElement);
+    messageElement.appendChild(contentElement);
+    
+    chatMessages.appendChild(messageElement);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// Add a system message to the chat box
+function addSystemMessage(message) {
+    const messageElement = document.createElement('div');
+    messageElement.className = 'system-message';
+    
+    const contentElement = document.createElement('p');
+    contentElement.textContent = message;
+    
+    messageElement.appendChild(contentElement);
+    
+    chatMessages.appendChild(messageElement);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// Speak text using text-to-speech
+function speakText(text) {
     if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        window.speechSynthesis.speak(utterance);
+        const speech = new SpeechSynthesisUtterance(text);
+        speech.lang = 'en-US';
+        window.speechSynthesis.speak(speech);
     }
 }
 
-// Send video stream to other participants
-function sendVideoStream(targetUserId) {
-    if (localStream) {
-        const videoTrack = localStream.getVideoTracks()[0];
-        if (videoTrack) {
-            socket.emit('video_stream', {
-                meeting_id: meetingId,
-                target_user_id: targetUserId,
-                stream: videoTrack
-            });
-        }
-    }
+// Copy meeting ID to clipboard
+function copyMeetingId() {
+    const meetingId = document.getElementById('meeting-id').innerText.split(':')[1].trim();
+    navigator.clipboard.writeText(meetingId)
+        .then(() => {
+            alert('Meeting ID copied to clipboard');
+        })
+        .catch(err => {
+            console.error('Could not copy text:', err);
+        });
 }
 
-// Toggle participants panel
-function toggleParticipantsPanel() {
-    const panel = document.querySelector('.participants-panel');
-    if (panel) {
-        panel.classList.toggle('active');
-    }
-}
-
-// Toggle chat panel on mobile
-function toggleChatPanel() {
-    const chatContainer = document.querySelector('.chat-container');
-    if (chatContainer) {
-        chatContainer.classList.toggle('active');
-    }
-}
-
-// Window beforeunload event to leave meeting gracefully
-window.addEventListener('beforeunload', () => {
+// Leave the meeting
+function leaveMeeting() {
     socket.emit('leave', { meeting_id: meetingId });
-});
+    
+    // Stop all media tracks
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Stop gesture recognition if active
+    if (isGestureActive) {
+        stopGestureRecognition();
+    }
+    
+    // Redirect to thank you page
+    window.location.href = `/thankyou?meeting_id=${meetingId}`;
+}
+
+// Update the list of participants
+function updateParticipantsList(participants) {
+    // This function would update a UI component showing all participants
+    console.log('Participants:', participants);
+}
