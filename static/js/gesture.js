@@ -115,6 +115,8 @@ class GestureClient {
             console.error('Network error during prediction:', error);
             this.predictionCooldown = false;
         });
+        console.log("Sending frame for prediction:", this.frameBuffer.length);
+
     }
     
     // Get a debug visualization of the current frame buffer
