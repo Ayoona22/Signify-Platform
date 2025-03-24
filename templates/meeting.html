@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/meeting.css') }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
 </head>
 <body>
     <div class="meeting-container">
@@ -93,8 +94,13 @@
         const meetingId = "{{ meeting_id }}";
         const userId = "{{ user_id }}";
         const username = "{{ username }}";
+        const agoraAppId = "{{ agora_app_id }}";
+        const agoraToken = "{{ agora_token }}";
+        const agoraChannel = "{{ agora_channel }}";
         let socket;
-        let localStream;
+        let agoraClient;
+        let localAudioTrack;
+        let localVideoTrack;
         let micEnabled = true;
         let cameraEnabled = true;
         let gestureEnabled = false;
@@ -109,10 +115,50 @@
         let isGestureRecognitionActive = false;
         let gestureToggleBtn = document.getElementById('gesture-toggle');
         
+        // Initialize Agora client
+        async function initializeAgoraClient() {
+            try {
+                agoraClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+                
+                // Join the channel
+                await agoraClient.join(agoraAppId, agoraChannel, agoraToken, userId);
+                
+                // Create and publish local tracks
+                [localAudioTrack, localVideoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
+                await agoraClient.publish([localAudioTrack, localVideoTrack]);
+                
+                // Add local video to grid
+                addVideoStream(userId, username, localVideoTrack, true);
+                
+                // Handle remote users
+                agoraClient.on("user-published", async (user, mediaType) => {
+                    await agoraClient.subscribe(user, mediaType);
+                    
+                    if (mediaType === "video") {
+                        addVideoStream(user.uid, `User ${user.uid}`, user.videoTrack);
+                    }
+                    
+                    if (mediaType === "audio") {
+                        user.audioTrack.play();
+                    }
+                });
+                
+                agoraClient.on("user-unpublished", (user, mediaType) => {
+                    if (mediaType === "video") {
+                        removeVideoStream(user.uid);
+                    }
+                });
+                
+            } catch (error) {
+                console.error("Error initializing Agora client:", error);
+                alert("Could not join the video call. Please check your camera and microphone permissions.");
+            }
+        }
+        
         // Initialize the meeting
         window.onload = function() {
             initializeSocket();
-            initializeLocalStream();
+            initializeAgoraClient();
             
             // Add event listener for chat input
             document.getElementById('chat-input-field').addEventListener('keypress', function(e) {
@@ -207,99 +253,69 @@
             });
         }
         
-        // Initialize local video stream
-        function initializeLocalStream() {
-            navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: true
-            }).then(stream => {
-                localStream = stream;
-                localVideo.srcObject = stream;
-                
-                // Add local video to grid
-                addVideoStream(userId, username, stream, true);
-                
-                // Mute local audio by default
-                toggleMicStream(false);
-            }).catch(error => {
-                console.error('Error accessing media devices:', error);
-                alert('Could not access camera or microphone. Please check permissions.');
-            });
-        }
-        
         // Add a video stream to the grid
-        function addVideoStream(id, name, stream, isLocal = false) {
+        function addVideoStream(id, name, videoTrack, isLocal = false) {
             const videoContainer = document.createElement('div');
             videoContainer.className = 'video-container';
             videoContainer.id = `container-${id}`;
             
-            const video = document.createElement('video');
-            video.id = `video-${id}`;
-            video.srcObject = stream;
-            video.autoplay = true;
-            video.playsInline = true;
-            if (isLocal) {
-                video.muted = true;
-            }
+            const videoElement = document.createElement('div');
+            videoElement.id = `video-${id}`;
             
             const nameLabel = document.createElement('div');
             nameLabel.className = 'name-label';
             nameLabel.textContent = name + (isLocal ? ' (You)' : '');
             
-            videoContainer.appendChild(video);
+            videoContainer.appendChild(videoElement);
             videoContainer.appendChild(nameLabel);
             videoGrid.appendChild(videoContainer);
+            
+            videoTrack.play(`video-${id}`);
         }
         
-        // Toggle microphone
-        function toggleMic() {
-            micEnabled = !micEnabled;
-            toggleMicStream(micEnabled);
-            
-            const micBtn = document.getElementById('mic-toggle');
-            if (micEnabled) {
-                micBtn.classList.remove('disabled');
-                micBtn.querySelector('.icon').textContent = '🎤';
-            } else {
-                micBtn.classList.add('disabled');
-                micBtn.querySelector('.icon').textContent = '🔇';
+        // Remove a video stream from the grid
+        function removeVideoStream(id) {
+            const container = document.getElementById(`container-${id}`);
+            if (container) {
+                container.remove();
             }
         }
         
-        // Toggle microphone stream
-        function toggleMicStream(enabled) {
-            if (localStream) {
-                localStream.getAudioTracks().forEach(track => {
-                    track.enabled = enabled;
-                });
+        // Toggle microphone
+        async function toggleMic() {
+            if (localAudioTrack) {
+                micEnabled = !micEnabled;
+                await localAudioTrack.setEnabled(micEnabled);
+                
+                const micBtn = document.getElementById('mic-toggle');
+                if (micEnabled) {
+                    micBtn.classList.remove('disabled');
+                    micBtn.querySelector('.icon').textContent = '🎤';
+                } else {
+                    micBtn.classList.add('disabled');
+                    micBtn.querySelector('.icon').textContent = '🔇';
+                }
             }
         }
         
         // Toggle camera
-        function toggleCamera() {
-            cameraEnabled = !cameraEnabled;
-            toggleCameraStream(cameraEnabled);
-            
-            const cameraBtn = document.getElementById('camera-toggle');
-            if (cameraEnabled) {
-                cameraBtn.classList.remove('disabled');
-                cameraBtn.querySelector('.icon').textContent = '📹';
-            } else {
-                cameraBtn.classList.add('disabled');
-                cameraBtn.querySelector('.icon').textContent = '🎦';
-            }
-        }
-        
-        // Toggle camera stream
-        function toggleCameraStream(enabled) {
-            if (localStream) {
-                localStream.getVideoTracks().forEach(track => {
-                    track.enabled = enabled;
-                });
+        async function toggleCamera() {
+            if (localVideoTrack) {
+                cameraEnabled = !cameraEnabled;
+                await localVideoTrack.setEnabled(cameraEnabled);
                 
-                // If gesture recognition is enabled and camera is disabled, disable gesture recognition
-                if (!enabled && gestureEnabled) {
-                    toggleGesture();
+                const cameraBtn = document.getElementById('camera-toggle');
+                if (cameraEnabled) {
+                    cameraBtn.classList.remove('disabled');
+                    cameraBtn.querySelector('.icon').textContent = '📹';
+                } else {
+                    cameraBtn.classList.add('disabled');
+                    cameraBtn.querySelector('.icon').textContent = '🎦';
+                    
+                    // If gesture recognition is enabled and camera is disabled, disable gesture recognition
+                    if (gestureEnabled) {
+                        toggleGesture();
+                    }
                 }
             }
         }
@@ -493,7 +509,17 @@
         }
         
         // Leave the meeting
-        function leaveMeeting() {
+        async function leaveMeeting() {
+            if (agoraClient) {
+                // Leave Agora channel
+                await agoraClient.leave();
+                
+                // Close local tracks
+                if (localAudioTrack) localAudioTrack.close();
+                if (localVideoTrack) localVideoTrack.close();
+            }
+            
+            // Emit leave event to Socket.IO
             socket.emit('leave', {
                 meeting_id: meetingId
             });
