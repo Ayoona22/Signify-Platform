@@ -1,5 +1,5 @@
 // Global variables
-const socket = io();
+const socket = io({ transports: ["websocket"] });
 const meetingId = document.getElementById('meeting-id').innerText.split(':')[1].trim();
 const userId = document.getElementById('user-id').value;
 const username = document.getElementById('username').value;
@@ -23,7 +23,12 @@ const iceServers = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
+        { urls: 'stun:stun2.l.google.com:19302' },
+        {
+            urls: 'turn:turn.server.com:3478',
+            username: 'your_turn_username',
+            credential: 'your_turn_password'
+        }
     ]
 };
 
@@ -71,6 +76,19 @@ async function initializeMeeting() {
 
 // Set up socket event listeners
 function setupSocketListeners() {
+    // Debugging: Log when WebRTC signaling messages are received
+    socket.on('offer', (data) => {
+        console.log('Received offer:', data);
+    });
+
+    socket.on('answer', (data) => {
+        console.log('Received answer:', data);
+    });
+
+    socket.on('ice_candidate', (data) => {
+        console.log('Received ICE candidate:', data);
+    });
+
     // When a new user joins
     socket.on('user_joined', (data) => {
         addSystemMessage(`${data.username} joined the meeting`);
@@ -86,7 +104,7 @@ function setupSocketListeners() {
         // Update participants list
         updateParticipantsList(data.participants);
     });
-    
+
     // When a user leaves
     socket.on('user_left', (data) => {
         addSystemMessage(`${data.username} left the meeting`);
@@ -103,31 +121,37 @@ function setupSocketListeners() {
             delete peerConnections[data.user_id];
         }
     });
-    
+
     // When a new message is received
     socket.on('new_message', (data) => {
+        console.log("Received new message:", data);
         addChatMessage(data.username, data.message, data.type);
         
         // If it's a gesture message, also convert to speech
         if (data.type === 'gesture') {
+            console.log("Gesture detected:", data.message);
             speakText(data.message);
         }
     });
-    
+
     // WebRTC Signaling
     socket.on('offer', async (data) => {
-        const { offer, user_id, username } = data;
-        
+        console.log("Processing offer from:", data.user_id);
+        const { offer, user_id } = data;
+
         // Create peer connection if it doesn't exist
         if (!peerConnections[user_id]) {
             createPeerConnection(user_id, true);
         }
-        
+
         try {
             await peerConnections[user_id].setRemoteDescription(new RTCSessionDescription(offer));
+            console.log(`Set remote description from ${user_id}`);
+
             const answer = await peerConnections[user_id].createAnswer();
             await peerConnections[user_id].setLocalDescription(answer);
-            
+
+            console.log("Sending answer to:", user_id);
             // Send the answer back
             socket.emit('answer', {
                 meeting_id: meetingId,
@@ -138,29 +162,34 @@ function setupSocketListeners() {
             console.error('Error handling offer:', error);
         }
     });
-    
+
     socket.on('answer', async (data) => {
+        console.log("Processing answer from:", data.user_id);
         const { answer, user_id } = data;
         try {
             if (peerConnections[user_id]) {
                 await peerConnections[user_id].setRemoteDescription(new RTCSessionDescription(answer));
+                console.log(`Set remote description for answer from ${user_id}`);
             }
         } catch (error) {
             console.error('Error handling answer:', error);
         }
     });
-    
+
     socket.on('ice_candidate', async (data) => {
+        console.log("Processing ICE candidate from:", data.user_id);
         const { candidate, user_id } = data;
         try {
             if (peerConnections[user_id]) {
                 await peerConnections[user_id].addIceCandidate(new RTCIceCandidate(candidate));
+                console.log(`Added ICE candidate from ${user_id}`);
             }
         } catch (error) {
             console.error('Error adding ice candidate:', error);
         }
     });
 }
+
 
 // Create a peer connection for a user
 function createPeerConnection(userId, isReceiver) {
@@ -375,6 +404,7 @@ function stopGestureRecognition() {
 function sendChatMessage() {
     const message = chatInputField.value.trim();
     if (message) {
+        console.log("Sending message:", message);
         socket.emit('chat_message', {
             meeting_id: meetingId,
             message: message
