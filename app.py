@@ -10,7 +10,7 @@ from gesture_recognition import GestureRecognizer
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Initialize database
 init_db()
@@ -145,9 +145,7 @@ def on_join(data):
     if not user_id or not username:
         return
     
-    print(f"User {username} ({user_id}) joining meeting {meeting_id}")
     join_room(meeting_id)
-    join_room(user_id)  # Join a room specific to this user for direct messages
     
     # Add participant to meeting's active participants
     if meeting_id not in active_participants:
@@ -157,30 +155,15 @@ def on_join(data):
         'name': username,
         'id': user_id
     }
+
+    print(f"User {username} joined {meeting_id}, Participants: {active_participants}")
     
-    # Notify ALL participants including the new user
+    # Notify other participants
     emit('user_joined', {
         'user_id': user_id,
         'username': username,
         'participants': list(active_participants[meeting_id].values())
-    }, room=meeting_id)
-    
-    # Send current participants list to the new user
-    emit('initialize_participants', {
-        'participants': list(active_participants[meeting_id].values())
-    })
-
-@socketio.on('connect')
-def handle_connect():
-    emit('connection_established', {'status': 'connected'})
-
-@socketio.on('request_participants')
-def handle_participants_request(data):
-    meeting_id = data['meeting_id']
-    if meeting_id in active_participants:
-        emit('initialize_participants', {
-            'participants': list(active_participants[meeting_id].values())
-        })
+    }, to=meeting_id)
 
 @socketio.on('leave')
 def on_leave(data):
@@ -231,6 +214,9 @@ def handle_chat_message(data):
     user_id = session.get('user_id')
     username = session.get('user_name')
     message = data['message']
+
+    print(f"Received chat message from {username}: {message}")
+
     
     if not user_id or not username:
         return
@@ -271,7 +257,6 @@ def handle_offer(data):
     if not user_id or not username:
         return
     
-    print(f"Forwarding offer from {user_id} to {to_user_id}")
     # Forward the offer to the intended recipient
     emit('offer', {
         'offer': offer,
@@ -289,7 +274,6 @@ def handle_answer(data):
     if not user_id:
         return
     
-    print(f"Forwarding answer from {user_id} to {to_user_id}")
     # Forward the answer to the intended recipient
     emit('answer', {
         'answer': answer,
@@ -306,7 +290,6 @@ def handle_ice_candidate(data):
     if not user_id:
         return
     
-    print(f"Forwarding ICE candidate from {user_id} to {to_user_id}")
     # Forward the ICE candidate to the intended recipient
     emit('ice_candidate', {
         'candidate': candidate,
