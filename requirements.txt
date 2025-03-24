@@ -27,3 +27,7 @@ aiortc==1.5.0     # For WebRTC functionality
 pyttsx3==2.90     # Optional for speech synthesis
 gTTS==2.3.2       # Google Text-to-Speech alternative
 gunicorn==20.1.0
+
+redis==4.5.1
+
+agora-token-builder==1.0.0
