@@ -6,6 +6,17 @@ import uuid
 import json
 from database import init_db, add_user, verify_user, get_user, add_meeting, get_meeting, meeting_exists
 from gesture_recognition import GestureRecognizer
+import redis
+from datetime import datetime, timedelta
+from agora_token_builder import RtcTokenBuilder
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Agora credentials
+AGORA_APP_ID = os.getenv('AGORA_APP_ID')
+AGORA_APP_CERTIFICATE = os.getenv('AGORA_APP_CERTIFICATE')
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -20,6 +31,22 @@ gesture_recognizer = GestureRecognizer()
 
 # Active participants (stored in memory but keyed by meeting ID)
 active_participants = {}
+
+# Generate Agora token
+def generate_agora_token(channel_name, uid):
+    expiration_time = 3600  # Token expires in 1 hour
+    current_timestamp = int(datetime.now().timestamp())
+    privilege_expired_ts = current_timestamp + expiration_time
+
+    token = RtcTokenBuilder.buildTokenWithUid(
+        AGORA_APP_ID,
+        AGORA_APP_CERTIFICATE,
+        channel_name,
+        uid,
+        1,  # Role: 1 for host, 2 for guest
+        privilege_expired_ts
+    )
+    return token
 
 @app.route('/')
 def home():
@@ -68,45 +95,59 @@ def dashboard():
 def create_meeting():
     if 'user_id' not in session:
         return redirect(url_for('login'))
-    
+
     meeting_id = str(uuid.uuid4())[:8]
-    # Store meeting in database
+    # Generate Agora token for the host
+    agora_token = generate_agora_token(meeting_id, session['user_id'])
+    
+    meeting_data = {
+        'host': session['user_id'],
+        'participants': {
+            session['user_id']: {
+                'name': session['user_name'],
+                'id': session['user_id']
+            }
+        },
+        'agora_channel': meeting_id
+    }
     add_meeting(meeting_id, session['user_id'])
     
-    # Initialize participant tracking for this meeting
-    if meeting_id not in active_participants:
-        active_participants[meeting_id] = {}
-    
-    return redirect(url_for('meeting', meeting_id=meeting_id))
+    return redirect(url_for('meeting', meeting_id=meeting_id, token=agora_token))
 
 @app.route('/join_meeting', methods=['POST'])
 def join_meeting():
     if 'user_id' not in session:
         return redirect(url_for('login'))
-    
+
     meeting_id = request.form.get('meeting_id')
+    meeting_data = get_meeting(meeting_id)
     
-    # Check if meeting exists in database
-    if meeting_exists(meeting_id):
-        return redirect(url_for('meeting', meeting_id=meeting_id))
+    if meeting_data:
+        # Generate Agora token for the participant
+        agora_token = generate_agora_token(meeting_id, session['user_id'])
+        return redirect(url_for('meeting', meeting_id=meeting_id, token=agora_token))
     else:
-        return render_template('dashboard.html', error="Meeting not found", username=session['user_name'])
+        return "Meeting not found", 404
 
 @app.route('/meeting/<meeting_id>')
 def meeting(meeting_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
+        
+    token = request.args.get('token')
+    meeting_data = get_meeting(meeting_id)
     
-    # Check if meeting exists in database
-    if not meeting_exists(meeting_id):
-        # Create meeting if it doesn't exist (for the host)
-        add_meeting(meeting_id, session['user_id'])
-    
-    # Initialize participant tracking for this meeting if not already done
-    if meeting_id not in active_participants:
-        active_participants[meeting_id] = {}
-    
-    return render_template('meeting.html', meeting_id=meeting_id, username=session['user_name'], user_id=session['user_id'])
+    if not meeting_data:
+        return "Meeting not found", 404
+        
+    return render_template('meeting.html',
+        meeting_id=meeting_id,
+        user_id=session['user_id'],
+        username=session['user_name'],
+        agora_app_id=AGORA_APP_ID,
+        agora_token=token,
+        agora_channel=meeting_id
+    )
 
 @app.route('/thankyou')
 def thankyou():
